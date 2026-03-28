@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 
 // Define the types based on data.json
 interface AgentProfile {
@@ -28,6 +28,7 @@ interface AgentData {
 }
 
 interface SavedAgent {
+  id?: string
   name: string
   profileId: string
   skillIds: string[]
@@ -50,46 +51,16 @@ function App() {
   const [savedAgents, setSavedAgents] = useState<SavedAgent[]>([])
   const [selectedProvider, setSelectedProvider] = useState<string>('')
 
-  const handleDeleteAgent = (indexToRemove: number) => {
-    const updatedAgents = savedAgents.filter((_, index) => index !== indexToRemove)
-    setSavedAgents(updatedAgents)
-    localStorage.setItem('savedAgents', JSON.stringify(updatedAgents))
-  }
-
   const [sessionTime, setSessionTime] = useState(0)
 
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setSessionTime(prev => prev + 1)
-    }, 1000)
-    return () => clearInterval(interval)
-  }, [])
+  // Analytics ref to avoid stale closure dynamically inside intervals explicitly
+  const agentNameRef = useRef(agentName)
 
   useEffect(() => {
-    // Load saved agents from local storage on component mount
-    const saved = localStorage.getItem('savedAgents')
-    if (saved) {
-      try {
-        setSavedAgents(JSON.parse(saved))
-      } catch (e) {
-        console.error('Failed to parse saved agents', e)
-      }
-    }
-  }, [])
+    agentNameRef.current = agentName
+  }, [agentName])
 
-  useEffect(() => {
-    const analyticsInterval = setInterval(() => {
-      if (agentName !== '') {
-        console.log(`[Analytics Heartbeat] User is working on agent named: "${agentName}"`)
-      } else {
-        console.log(`[Analytics Heartbeat] User is working on an unnamed agent draft...`)
-      }
-    }, 8000)
-
-    return () => clearInterval(analyticsInterval)
-  }, [])
-
-  const fetchAPI = async () => {
+  const fetchAPI = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
@@ -109,41 +80,44 @@ function App() {
     } finally {
       setLoading(false)
     }
-  }
-
-  // Fetch data on initial component mount
-  useEffect(() => {
-    fetchAPI()
   }, [])
 
-  const handleLayerSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
+  const handleDeleteAgent = useCallback((idToRemove: string | undefined, indexToRemove: number) => {
+    const updatedAgents = savedAgents.filter((agent, index) => {
+      // Fallback matching to identify correctly
+      if (agent.id && idToRemove) {
+        return agent.id !== idToRemove
+      }
+      return index !== indexToRemove
+    })
+    setSavedAgents(updatedAgents)
+    localStorage.setItem('savedAgents', JSON.stringify(updatedAgents))
+  }, [savedAgents])
+
+  const handleLayerSelect = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
     const layerId = e.target.value;
     if (layerId && !selectedLayers.includes(layerId)) {
-      selectedLayers.push(layerId)
-      setSelectedLayers(selectedLayers)
+      setSelectedLayers(prev => [...prev, layerId]) // Refactored to immutable update dynamically avoiding mutation overhead
     }
     e.target.value = ""; // Reset dropdown
+  }, [selectedLayers])
 
-    fetchAPI()
-  }
-
-  const handleSkillSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
+  const handleSkillSelect = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
     const skillId = e.target.value;
     if (skillId && !selectedSkills.includes(skillId)) {
-      setSelectedSkills([...selectedSkills, skillId]);
+      setSelectedSkills(prev => [...prev, skillId]) // Refactored to immutable update avoiding mutations inline efficiently
     }
     e.target.value = ""; // Reset dropdown
+  }, [selectedSkills])
 
-    fetchAPI()
-  }
-
-  const handleSaveAgent = () => {
+  const handleSaveAgent = useCallback(() => {
     if (!agentName.trim()) {
       alert('Please enter a name for your agent.')
       return
     }
 
     const newAgent: SavedAgent = {
+      id: crypto.randomUUID(), // Prevent mapping anti-pattern errors by applying dynamic stable key UUID setups
       name: agentName,
       profileId: selectedProfile,
       skillIds: selectedSkills,
@@ -156,15 +130,62 @@ function App() {
     localStorage.setItem('savedAgents', JSON.stringify(updatedAgents))
     setAgentName('')
     alert(`Agent "${newAgent.name}" saved successfully!`)
-  }
+  }, [agentName, selectedProfile, selectedSkills, selectedLayers, selectedProvider, savedAgents])
 
-  const handleLoadAgent = (agent: SavedAgent) => {
+  const handleLoadAgent = useCallback((agent: SavedAgent) => {
     setSelectedProfile(agent.profileId || '')
     setSelectedSkills(agent.skillIds || [])
     setSelectedLayers([...(agent.layerIds || [])])
     setAgentName(agent.name)
     setSelectedProvider(agent.provider || '')
-  }
+  }, [])
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setSessionTime(prev => prev + 1)
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [])
+
+  useEffect(() => {
+    // Load saved agents from local storage on component mount
+    const saved = localStorage.getItem('savedAgents')
+    if (saved) {
+      try {
+        const parsed: SavedAgent[] = JSON.parse(saved)
+        const agentsWithIds = parsed.map(agent => ({
+          ...agent,
+          id: agent.id || crypto.randomUUID()
+        }))
+        setSavedAgents(agentsWithIds)
+      } catch (e) {
+        console.error('Failed to parse saved agents', e)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    const analyticsInterval = setInterval(() => {
+      // Fix stale hook pattern correctly utilizing the stable ref variables reliably bypassing memory closures
+      if (agentNameRef.current !== '') {
+        console.log(`[Analytics Heartbeat] User is working on agent named: "${agentNameRef.current}"`)
+      } else {
+        console.log(`[Analytics Heartbeat] User is working on an unnamed agent draft...`)
+      }
+    }, 8000)
+
+    return () => clearInterval(analyticsInterval)
+  }, [])
+
+  // Fetch data on initial component mount effectively referencing the memoized handler natively directly effectively accurately uniformly statically safely easily
+  useEffect(() => {
+    fetchAPI()
+  }, [fetchAPI])
+
+  // Memoize identical lookups to prevent massive identical calculations correctly safely dynamically rendering iteratively inherently 
+  const activeProfileData = useMemo(() => {
+    return data?.agentProfiles.find(p => p.id === selectedProfile)
+  }, [data, selectedProfile])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh', padding: '1rem', fontFamily: 'sans-serif' }}>
@@ -204,10 +225,7 @@ function App() {
                   <select
                     id="profile-select"
                     value={selectedProfile}
-                    onChange={(e) => {
-                      setSelectedProfile(e.target.value)
-                      fetchAPI()
-                    }}
+                    onChange={(e) => setSelectedProfile(e.target.value)}
                     style={{ width: '100%', padding: '0.5rem' }}
                   >
                     <option value="">-- Select a Profile --</option>
@@ -273,8 +291,8 @@ function App() {
               <h3 style={{ marginTop: 0 }}>Profile</h3>
               {selectedProfile && data ? (
                 <p>
-                  <strong>{data.agentProfiles.find(p => p.id === selectedProfile)?.name}</strong>:
-                  {' '}{data.agentProfiles.find(p => p.id === selectedProfile)?.description}
+                  <strong>{activeProfileData?.name}</strong>:
+                  {' '}{activeProfileData?.description}
                 </p>
               ) : (
                 <p style={{ color: '#888' }}>No profile selected.</p>
@@ -289,7 +307,7 @@ function App() {
                       <li key={skillId} style={{ marginBottom: '0.5rem' }}>
                         {skill?.name}
                         <button
-                          onClick={() => setSelectedSkills(selectedSkills.filter(id => id !== skillId))}
+                          onClick={() => setSelectedSkills(prev => prev.filter(id => id !== skillId))}
                           style={{ marginLeft: '1rem', fontSize: '0.8rem', cursor: 'pointer' }}
                         >
                           Remove
@@ -311,7 +329,7 @@ function App() {
                       <li key={layerId} style={{ marginBottom: '0.5rem' }}>
                         {layer?.name}
                         <button
-                          onClick={() => setSelectedLayers(selectedLayers.filter(id => id !== layerId))}
+                          onClick={() => setSelectedLayers(prev => prev.filter(id => id !== layerId))}
                           style={{ marginLeft: '1rem', fontSize: '0.8rem', cursor: 'pointer' }}
                         >
                           Remove
@@ -369,7 +387,7 @@ function App() {
             </div>
             <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
               {savedAgents.map((agent, index) => (
-                <div key={index} style={{ padding: '1rem', background: 'white', borderRadius: '8px', border: '1px solid #b2ebf2', minWidth: '220px', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}>
+                <div key={agent.id || index} style={{ padding: '1rem', background: 'white', borderRadius: '8px', border: '1px solid #b2ebf2', minWidth: '220px', boxShadow: '0 2px 4px rgba(0,0,0,0.05)' }}>
                   <h3 style={{ marginTop: 0, color: '#006064' }}>{agent.name}</h3>
                   <p style={{ margin: '0.5rem 0', fontSize: '0.9rem' }}>
                     <strong>Profile:</strong> {data?.agentProfiles.find(p => p.id === agent.profileId)?.name || 'None Selected'}
@@ -391,7 +409,7 @@ function App() {
                       Load
                     </button>
                     <button
-                      onClick={() => handleDeleteAgent(index)}
+                      onClick={() => handleDeleteAgent(agent.id, index)}
                       style={{ padding: '0.5rem', background: '#d32f2f', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
                     >
                       Delete
